@@ -5,7 +5,8 @@ synopsis:           Semantica operacional small-step de AE e LC
 author:             rbonifacio
 maintainer:         rbonifacio123@gmail.com
 build-type:         Simple
-extra-doc-files:    DOCUMENTACAO.md
+extra-doc-files:    README.md
+                    docs/*.md
 
 common warnings
     ghc-options: -Wall
