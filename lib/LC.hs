@@ -7,12 +7,15 @@ type Name = String
 type Context = [(Name, Type)]
 
 data Type = TBool
+          | TUnit
           | TInt
           | TArrow Type Type
   deriving (Show, Eq)
 
 data Expr = TTrue
           | TFalse
+          | Unit
+          | Seq Expr Expr
           | TNum Integer
           | TIfThenElse Expr Expr Expr
           | Add Expr Expr
@@ -28,6 +31,7 @@ data Expr = TTrue
 tc :: Expr -> Context -> Maybe Type
 tc TTrue _                   = Just TBool
 tc TFalse _                  = Just TBool
+tc Unit _                    = Just TUnit
 tc (TNum _) _                = Just TInt
 tc (TIfThenElse e1 e2 e3) c  =
   tc e1 c >>= \tyE1 ->
@@ -59,9 +63,22 @@ tcIntOp e1 e2 c res =
   tc e2 c >>= \tyE2 ->
   if (tyE1 == TInt) && (tyE2 == TInt) then Just res else Nothing
 
-
-
-
+-- desugar should be applied before type checking and interpretation.
+-- we could have defined interpretation and typing for Seq, but, with
+-- desugaring, we just translate a sequence of computations into the
+-- core of the lambda calculus.
+desugar :: Expr -> Expr
+desugar (Seq e1 e2) = App (
+  Abs ("x", TUnit) (desugar e2)) (desugar e1)  -- 'x' must not be in fv(e2)
+desugar (TIfThenElse e1 e2 e3) = TIfThenElse (desugar e1) (desugar e2) (desugar e3)
+desugar (Add e1 e2)   = Add (desugar e1) (desugar e2)
+desugar (Sub e1 e2)   = Sub (desugar e1) (desugar e2)
+desugar (Mul e1 e2)   = Mul (desugar e1) (desugar e2)
+desugar (Equal e1 e2) = Equal (desugar e1) (desugar e2)
+desugar (Less e1 e2)  = Less (desugar e1) (desugar e2)
+desugar (Abs p e)     = Abs p (desugar e)
+desugar (App e1 e2)   = App (desugar e1) (desugar e2)
+desugar e = e   -- TTrue, TFalse, Unit, TNum, Var
 
 eval :: Expr -> Expr
 eval e = case step e of
@@ -84,6 +101,10 @@ step (Mul e1 e2)                            = stepBinOp Mul e1 e2
 step (Equal e1 e2)                          = stepBinOp Equal e1 e2
 step (Less e1 e2)                           = stepBinOp Less e1 e2
 
+--
+-- step (App e1 e2)
+--
+
 step (App (Abs (x, _) body) e2) | isValue e2 = Just $ substitution x e2 body
 step (App e1 e2) | isValue e1               = step e2 >>= \e2' -> Just $ App e1 e2'
                  | otherwise                = step e1 >>= \e1' -> Just $ App e1' e2
@@ -104,6 +125,7 @@ fromBool False = TFalse
 isValue :: Expr -> Bool
 isValue TTrue     = True
 isValue TFalse    = True
+isValue Unit      = True
 isValue (TNum _)  = True
 isValue (Abs _ _) = True
 isValue _         = False

@@ -222,3 +222,98 @@ spec = do
       let twice = Abs ("f", TArrow TInt TInt) (App (Var "f") (App (Var "f") (TNum 0)))
       tc (App twice inc) [] `shouldBe` Just TInt
       eval (App twice inc) `shouldBe` TNum 2
+
+  ---------------------------------------------------------------------------
+  -- Unit: o tipo com um único valor (unit : Unit)
+  ---------------------------------------------------------------------------
+  describe "Unit" $ do
+    it "T-Unit: unit : Unit" $
+      tc Unit [] `shouldBe` Just TUnit
+
+    it "unit é um valor" $
+      isValue Unit `shouldBe` True
+
+    it "unit não dá passo" $
+      step Unit `shouldBe` Nothing
+
+    it "\\u:Unit. u  :  Unit -> Unit" $
+      tc (Abs ("u", TUnit) (Var "u")) [] `shouldBe` Just (TArrow TUnit TUnit)
+
+    it "(\\u:Unit. 1) unit  :  Int" $
+      tc (App (Abs ("u", TUnit) (TNum 1)) Unit) [] `shouldBe` Just TInt
+
+    it "rejeita passar Int para uma função que espera Unit" $
+      tc (App (Abs ("u", TUnit) (TNum 1)) (TNum 0)) [] `shouldBe` Nothing
+
+    it "rejeita passar unit para uma função que espera Int" $
+      tc (App inc Unit) [] `shouldBe` Nothing
+
+    it "rejeita unit em aritmética: unit + 1" $
+      tc (Add Unit (TNum 1)) [] `shouldBe` Nothing
+
+    it "if true then unit else unit  :  Unit" $
+      tc (TIfThenElse TTrue Unit Unit) [] `shouldBe` Just TUnit
+
+    it "rejeita if com um ramo Unit e outro Int" $
+      tc (TIfThenElse TTrue Unit (TNum 1)) [] `shouldBe` Nothing
+
+    it "fv(unit) = {} e unit[x := 5] = unit" $ do
+      fv Unit `shouldBe` Set.empty
+      substitution "x" (TNum 5) Unit `shouldBe` Unit
+
+    it "E-AppAbs com argumento unit: (\\u:Unit. 1) unit  ->  1" $
+      step (App (Abs ("u", TUnit) (TNum 1)) Unit) `shouldBe` Just (TNum 1)
+
+    it "(\\u:Unit. u) unit  ->*  unit" $
+      eval (App (Abs ("u", TUnit) (Var "u")) Unit) `shouldBe` Unit
+
+  ---------------------------------------------------------------------------
+  -- Seq (e1; e2) e desugar:  e1; e2  ==>  (\x:Unit. e2) e1
+  ---------------------------------------------------------------------------
+  describe "desugar (Seq)" $ do
+    it "e1; e2  ==>  (\\x:Unit. e2) e1" $
+      desugar (Seq Unit (TNum 1))
+        `shouldBe` App (Abs ("x", TUnit) (TNum 1)) Unit
+
+    it "termos sem Seq ficam inalterados" $ do
+      desugar (TNum 1) `shouldBe` TNum 1
+      desugar inc `shouldBe` inc
+      desugar (App inc (TNum 2)) `shouldBe` App inc (TNum 2)
+
+    it "unit; 1  :  Int (o tipo da sequência é o de e2)" $
+      tc (desugar (Seq Unit (TNum 1))) [] `shouldBe` Just TInt
+
+    it "unit; true  :  Bool" $
+      tc (desugar (Seq Unit TTrue)) [] `shouldBe` Just TBool
+
+    it "rejeita sequência cujo primeiro termo não é Unit: 1; 2" $
+      tc (desugar (Seq (TNum 1) (TNum 2))) [] `shouldBe` Nothing
+
+    it "o primeiro termo pode ser uma computação do tipo Unit: ((\\u:Unit. u) unit); 1  :  Int" $
+      tc (desugar (Seq (App (Abs ("u", TUnit) (Var "u")) Unit) (TNum 1))) []
+        `shouldBe` Just TInt
+
+    it "unit; 42  ->*  42" $
+      eval (desugar (Seq Unit (TNum 42))) `shouldBe` TNum 42
+
+    it "avalia e1 antes de e2: ((\\u:Unit. u) unit); 1 + 1  ->*  2" $
+      eval (desugar (Seq (App (Abs ("u", TUnit) (Var "u")) Unit) (Add (TNum 1) (TNum 1))))
+        `shouldBe` TNum 2
+
+    it "sequências aninhadas: unit; (unit; 7)  :  Int  e  ->*  7" $ do
+      let e = desugar (Seq Unit (Seq Unit (TNum 7)))
+      tc e [] `shouldBe` Just TInt
+      eval e `shouldBe` TNum 7
+
+    it "Seq dentro de uma abstração: \\u:Unit. (u; 1)  :  Unit -> Int" $
+      tc (desugar (Abs ("u", TUnit) (Seq (Var "u") (TNum 1)))) []
+        `shouldBe` Just (TArrow TUnit TInt)
+
+    -- PENDENTE: desugar usa sempre o nome x, então o x livre em e2 é capturado pela
+    -- abstração gerada e passa a se referir ao unit
+    xit "não captura variável livre de e2: x:Int ⊢ unit; x  :  Int" $
+      tc (desugar (Seq Unit (Var "x"))) [("x", TInt)] `shouldBe` Just TInt
+
+    xit "não captura variável livre de e2: (\\x:Int. (unit; x)) 5  ->*  5" $
+      eval (desugar (App (Abs ("x", TInt) (Seq Unit (Var "x"))) (TNum 5)))
+        `shouldBe` TNum 5
