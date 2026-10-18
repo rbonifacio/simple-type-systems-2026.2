@@ -382,3 +382,95 @@ spec = do
       e `shouldBe` AsExpr (App (Abs ("x", TUnit) (TNum 1)) Unit) TInt
       tc e [] `shouldBe` Just TInt
       eval e `shouldBe` TNum 1
+
+  ---------------------------------------------------------------------------
+  -- Let (TAPL 11.5):  let x = e1 in e2
+  --   T-Let:   Γ ⊢ e1 : T1   Γ, x:T1 ⊢ e2 : T2  ==>  Γ ⊢ let x = e1 in e2 : T2
+  --   E-LetV:  let x = v1 in e2  ->  e2[x := v1]
+  --   E-Let:   e1 -> e1'  ==>  let x = e1 in e2  ->  let x = e1' in e2
+  ---------------------------------------------------------------------------
+  describe "Let" $ do
+    it "T-Let: let x = 1 in x + 1  :  Int" $
+      tc (Let "x" (TNum 1) (Add (Var "x") (TNum 1))) [] `shouldBe` Just TInt
+
+    it "T-Let: o tipo do let é o do corpo: let x = 1 in x < 2  :  Bool" $
+      tc (Let "x" (TNum 1) (Less (Var "x") (TNum 2))) [] `shouldBe` Just TBool
+
+    it "T-Let: x pode ser uma função: let f = inc in f 1  :  Int" $
+      tc (Let "f" inc (App (Var "f") (TNum 1))) [] `shouldBe` Just TInt
+
+    it "rejeita let com e1 mal tipado: let x = 1 + true in x" $
+      tc (Let "x" (Add (TNum 1) TTrue) (Var "x")) [] `shouldBe` Nothing
+
+    it "rejeita let cujo corpo usa x com o tipo errado: let x = true in x + 1" $
+      tc (Let "x" TTrue (Add (Var "x") (TNum 1))) [] `shouldBe` Nothing
+
+    it "x não está no escopo de e1: let x = x in x  não tem tipo" $
+      tc (Let "x" (Var "x") (Var "x")) [] `shouldBe` Nothing
+
+    it "o let esconde (shadowing) a variável do contexto: x:Bool ⊢ let x = 1 in x  :  Int" $
+      tc (Let "x" (TNum 1) (Var "x")) [("x", TBool)] `shouldBe` Just TInt
+
+    it "lets aninhados: let x = 1 in let y = x + 1 in x + y  :  Int" $
+      tc (Let "x" (TNum 1) (Let "y" (Add (Var "x") (TNum 1)) (Add (Var "x") (Var "y")))) []
+        `shouldBe` Just TInt
+
+    it "let não é um valor" $
+      isValue (Let "x" (TNum 1) (Var "x")) `shouldBe` False
+
+    it "E-LetV: let x = 2 in x + 1  ->  2 + 1" $
+      step (Let "x" (TNum 2) (Add (Var "x") (TNum 1)))
+        `shouldBe` Just (Add (TNum 2) (TNum 1))
+
+    it "E-Let: avalia e1 antes de substituir: let x = 1 + 1 in x  ->  let x = 2 in x" $
+      step (Let "x" (Add (TNum 1) (TNum 1)) (Var "x"))
+        `shouldBe` Just (Let "x" (TNum 2) (Var "x"))
+
+    it "não avalia o corpo antes de e1 virar valor" $
+      step (Let "x" (Add (TNum 1) (TNum 1)) (Add (TNum 2) (TNum 3)))
+        `shouldBe` Just (Let "x" (TNum 2) (Add (TNum 2) (TNum 3)))
+
+    it "let x = 1 + 1 in x * x  ->*  4" $
+      eval (Let "x" (Add (TNum 1) (TNum 1)) (Mul (Var "x") (Var "x"))) `shouldBe` TNum 4
+
+    it "let f = inc in f (f 0)  ->*  2" $
+      eval (Let "f" inc (App (Var "f") (App (Var "f") (TNum 0)))) `shouldBe` TNum 2
+
+    it "lets aninhados: let x = 1 in let y = x + 1 in x + y  ->*  3" $
+      eval (Let "x" (TNum 1) (Let "y" (Add (Var "x") (TNum 1)) (Add (Var "x") (Var "y"))))
+        `shouldBe` TNum 3
+
+    it "shadowing: let x = 1 in let x = 2 in x  ->*  2" $
+      eval (Let "x" (TNum 1) (Let "x" (TNum 2) (Var "x"))) `shouldBe` TNum 2
+
+    it "shadowing: let x = 1 in let x = x + 1 in x  ->*  2" $
+      eval (Let "x" (TNum 1) (Let "x" (Add (Var "x") (TNum 1)) (Var "x"))) `shouldBe` TNum 2
+
+    it "let no corpo de uma abstração: (\\y:Int. let x = y + 1 in x * 2) 3  ->*  8" $ do
+      let e = App (Abs ("y", TInt) (Let "x" (Add (Var "y") (TNum 1)) (Mul (Var "x") (TNum 2)))) (TNum 3)
+      tc e [] `shouldBe` Just TInt
+      eval e `shouldBe` TNum 8
+
+    it "fv(let x = y in x + z) = {y, z}" $
+      fv (Let "x" (Var "y") (Add (Var "x") (Var "z"))) `shouldBe` Set.fromList ["y", "z"]
+
+    it "fv(let x = x in x) = {x} (o x de e1 é livre)" $
+      fv (Let "x" (Var "x") (Var "x")) `shouldBe` Set.fromList ["x"]
+
+    it "(let y = x in x + y)[x := 5] = let y = 5 in 5 + y" $
+      substitution "x" (TNum 5) (Let "y" (Var "x") (Add (Var "x") (Var "y")))
+        `shouldBe` Let "y" (TNum 5) (Add (TNum 5) (Var "y"))
+
+    it "substitui em e1 mas não no corpo quando o let liga o mesmo x" $
+      substitution "x" (TNum 5) (Let "x" (Var "x") (Var "x"))
+        `shouldBe` Let "x" (TNum 5) (Var "x")
+
+    it "evita captura renomeando: (let y = 1 in x + y)[x := y] = let a = 1 in y + a" $
+      substitution "x" (Var "y") (Let "y" (TNum 1) (Add (Var "x") (Var "y")))
+        `shouldBe` Let "a" (TNum 1) (Add (Var "y") (Var "a"))
+
+    it "desugar entra no let: let u = unit in (u; 1)  :  Int  e  ->*  1" $ do
+      let e = desugar (Let "u" Unit (Seq (Var "u") (TNum 1)))
+      e `shouldBe` Let "u" Unit (App (Abs ("x", TUnit) (TNum 1)) (Var "u"))
+      tc e [] `shouldBe` Just TInt
+      eval e `shouldBe` TNum 1

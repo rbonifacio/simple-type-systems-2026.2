@@ -25,6 +25,7 @@ data Expr = TTrue
           | Var Name
           | Abs (Name, Type) Expr
           | App Expr Expr
+          | Let Name Expr Expr  -- let x = e1 in e2
           | Seq Expr Expr
           | AsExpr Expr Type
 
@@ -59,7 +60,8 @@ tc (App e1 e2) c =
     TArrow t1 t2 | tyE2 == t1 -> Just t2
     _                         -> Nothing
 
-tc (AsExpr e ty) c = tc e c >>= \tyE -> if tyE == ty then return ty else Nothing
+tc (AsExpr e ty) c = tc e c  >>= \tyE -> if tyE == ty then return ty else Nothing
+tc (Let x e1 e2) c = tc e1 c >>= \tyE1 -> tc e2 ((x, tyE1):c)
 
 -- operador binario com dois operandos Int e resultado do tipo 'res'
 tcIntOp :: Expr -> Expr -> Context -> Type -> Maybe Type
@@ -84,6 +86,7 @@ desugar (Less e1 e2)  = Less (desugar e1) (desugar e2)
 desugar (Abs p e)     = Abs p (desugar e)
 desugar (App e1 e2)   = App (desugar e1) (desugar e2)
 desugar (AsExpr e t)  = AsExpr (desugar e) t
+desugar (Let x e1 e2) = Let x (desugar e1) (desugar e2)
 desugar e = e   -- TTrue, TFalse, Unit, TNum, Var
 
 eval :: Expr -> Expr
@@ -113,6 +116,9 @@ step (App e1 e2) | isValue e1               = step e2 >>= \e2' -> Just $ App e1 
 
 step (AsExpr e t) | isValue e                = Just e
                   | otherwise                = step e >>= \e' -> Just $ AsExpr e' t
+
+step (Let x e1 e2) | isValue e1               = Just $ substitution x e1 e2
+                  | otherwise                = step e1 >>= \e1' -> Just $ Let x e1' e2
 
 step _                                      = Nothing   -- valores e Var nao reduzem
 
@@ -146,6 +152,7 @@ fv (Equal e1 e2)           = fv e1 `Set.union` fv e2
 fv (Less e1 e2)            = fv e1 `Set.union` fv e2
 fv (TIfThenElse e1 e2 e3)  = Set.unions [fv e1, fv e2, fv e3]
 fv (AsExpr e _)            = fv e
+fv (Let x e1 e2)           = fv e1 `Set.union` (fv e2 `Set.difference` Set.singleton x)
 fv _                       = Set.empty
 
 
@@ -166,6 +173,14 @@ substitution x e (Less e1 e2) = Less (substitution x e e1) (substitution x e e2)
 substitution x e (TIfThenElse e1 e2 e3) =
   TIfThenElse (substitution x e e1) (substitution x e e2) (substitution x e e3)
 substitution x e (AsExpr t ty) = AsExpr (substitution x e t) ty
+-- x so esta ligada em e2; e1 sempre recebe a substituicao
+substitution x e (Let y e1 e2)
+                              | x == y = Let y e1' e2
+                              | y `Set.notMember` fv e = Let y e1' (substitution x e e2)
+                              | otherwise = Let z e1' (substitution x e (substitution y (Var z) e2))
+  where
+    e1' = substitution x e e1
+    z   = freshName (Set.unions [Set.singleton y, fv e2, fv e])
 substitution _ _ t            = t   -- TTrue, TFalse, TNum
 
 -- alpha-reducao: \n:T. body  ==>  \z:T. body[n := z]
@@ -175,5 +190,8 @@ substitution _ _ t            = t   -- TTrue, TFalse, TNum
 alphaRename :: (Name, Type) -> Expr -> Expr
 alphaRename (n, t) body = Abs (z, t) (substitution n (Var z) body)
   where
-    used = Set.insert n (fv body)
-    z    = head [ [c] | c <- ['a'..'z'], [c] `Set.notMember` used ]
+    z = freshName (Set.insert n (fv body))
+
+-- primeira letra do alfabeto que nao esta em 'used'
+freshName :: Set Name -> Name
+freshName used = head [ [c] | c <- ['a'..'z'], [c] `Set.notMember` used ]
