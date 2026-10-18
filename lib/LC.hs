@@ -15,7 +15,6 @@ data Type = TBool
 data Expr = TTrue
           | TFalse
           | Unit
-          | Seq Expr Expr
           | TNum Integer
           | TIfThenElse Expr Expr Expr
           | Add Expr Expr
@@ -26,6 +25,10 @@ data Expr = TTrue
           | Var Name
           | Abs (Name, Type) Expr
           | App Expr Expr
+          | Seq Expr Expr
+          | AsExpr Expr Type
+
+
   deriving (Show, Eq)
 
 tc :: Expr -> Context -> Maybe Type
@@ -56,6 +59,8 @@ tc (App e1 e2) c =
     TArrow t1 t2 | tyE2 == t1 -> Just t2
     _                         -> Nothing
 
+tc (AsExpr e ty) c = tc e c >>= \tyE -> if tyE == ty then return ty else Nothing
+
 -- operador binario com dois operandos Int e resultado do tipo 'res'
 tcIntOp :: Expr -> Expr -> Context -> Type -> Maybe Type
 tcIntOp e1 e2 c res =
@@ -78,6 +83,7 @@ desugar (Equal e1 e2) = Equal (desugar e1) (desugar e2)
 desugar (Less e1 e2)  = Less (desugar e1) (desugar e2)
 desugar (Abs p e)     = Abs p (desugar e)
 desugar (App e1 e2)   = App (desugar e1) (desugar e2)
+desugar (AsExpr e t)  = AsExpr (desugar e) t
 desugar e = e   -- TTrue, TFalse, Unit, TNum, Var
 
 eval :: Expr -> Expr
@@ -101,13 +107,12 @@ step (Mul e1 e2)                            = stepBinOp Mul e1 e2
 step (Equal e1 e2)                          = stepBinOp Equal e1 e2
 step (Less e1 e2)                           = stepBinOp Less e1 e2
 
---
--- step (App e1 e2)
---
-
 step (App (Abs (x, _) body) e2) | isValue e2 = Just $ substitution x e2 body
 step (App e1 e2) | isValue e1               = step e2 >>= \e2' -> Just $ App e1 e2'
                  | otherwise                = step e1 >>= \e1' -> Just $ App e1' e2
+
+step (AsExpr e t) | isValue e                = Just e
+                  | otherwise                = step e >>= \e' -> Just $ AsExpr e' t
 
 step _                                      = Nothing   -- valores e Var nao reduzem
 
@@ -140,6 +145,7 @@ fv (Mul e1 e2)             = fv e1 `Set.union` fv e2
 fv (Equal e1 e2)           = fv e1 `Set.union` fv e2
 fv (Less e1 e2)            = fv e1 `Set.union` fv e2
 fv (TIfThenElse e1 e2 e3)  = Set.unions [fv e1, fv e2, fv e3]
+fv (AsExpr e _)            = fv e
 fv _                       = Set.empty
 
 
@@ -159,6 +165,7 @@ substitution x e (Equal e1 e2) = Equal (substitution x e e1) (substitution x e e
 substitution x e (Less e1 e2) = Less (substitution x e e1) (substitution x e e2)
 substitution x e (TIfThenElse e1 e2 e3) =
   TIfThenElse (substitution x e e1) (substitution x e e2) (substitution x e e3)
+substitution x e (AsExpr t ty) = AsExpr (substitution x e t) ty
 substitution _ _ t            = t   -- TTrue, TFalse, TNum
 
 -- alpha-reducao: \n:T. body  ==>  \z:T. body[n := z]

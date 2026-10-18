@@ -317,3 +317,68 @@ spec = do
     xit "não captura variável livre de e2: (\\x:Int. (unit; x)) 5  ->*  5" $
       eval (desugar (App (Abs ("x", TInt) (Seq Unit (Var "x"))) (TNum 5)))
         `shouldBe` TNum 5
+
+  ---------------------------------------------------------------------------
+  -- AsExpr (ascription, TAPL 11.4):  e as T
+  --   T-Ascribe:   Γ ⊢ e : T  ==>  Γ ⊢ e as T : T
+  --   E-Ascribe:   v as T  ->  v
+  --   E-Ascribe1:  e -> e'  ==>  e as T  ->  e' as T
+  ---------------------------------------------------------------------------
+  describe "AsExpr (ascription)" $ do
+    it "T-Ascribe: 1 as Int  :  Int" $
+      tc (AsExpr (TNum 1) TInt) [] `shouldBe` Just TInt
+
+    it "T-Ascribe: (\\x:Int. x + 1) as Int -> Int  :  Int -> Int" $
+      tc (AsExpr inc (TArrow TInt TInt)) [] `shouldBe` Just (TArrow TInt TInt)
+
+    it "T-Ascribe usa o contexto: x:Bool ⊢ x as Bool  :  Bool" $
+      tc (AsExpr (Var "x") TBool) [("x", TBool)] `shouldBe` Just TBool
+
+    it "rejeita ascription com tipo diferente: 1 as Bool" $
+      tc (AsExpr (TNum 1) TBool) [] `shouldBe` Nothing
+
+    it "rejeita ascription de termo mal tipado: (1 + true) as Int" $
+      tc (AsExpr (Add (TNum 1) TTrue) TInt) [] `shouldBe` Nothing
+
+    it "ascription como subtermo: (1 as Int) + 2  :  Int" $
+      tc (Add (AsExpr (TNum 1) TInt) (TNum 2)) [] `shouldBe` Just TInt
+
+    it "ascriptions aninhadas: (1 as Int) as Int  :  Int" $
+      tc (AsExpr (AsExpr (TNum 1) TInt) TInt) [] `shouldBe` Just TInt
+
+    it "ascription não é um valor" $
+      isValue (AsExpr (TNum 1) TInt) `shouldBe` False
+
+    it "E-Ascribe: 1 as Int  ->  1" $
+      step (AsExpr (TNum 1) TInt) `shouldBe` Just (TNum 1)
+
+    it "E-Ascribe1: (1 + 2) as Int  ->  3 as Int" $
+      step (AsExpr (Add (TNum 1) (TNum 2)) TInt)
+        `shouldBe` Just (AsExpr (TNum 3) TInt)
+
+    it "(1 + 2) as Int  ->*  3" $
+      eval (AsExpr (Add (TNum 1) (TNum 2)) TInt) `shouldBe` TNum 3
+
+    it "(1 as Int) + 2  ->*  3" $
+      eval (Add (AsExpr (TNum 1) TInt) (TNum 2)) `shouldBe` TNum 3
+
+    it "função com ascription aplicada: (inc as Int -> Int) 41  ->*  42" $
+      eval (App (AsExpr inc (TArrow TInt TInt)) (TNum 41)) `shouldBe` TNum 42
+
+    it "fv(x as Int) = {x}" $
+      fv (AsExpr (Var "x") TInt) `shouldBe` Set.fromList ["x"]
+
+    it "(x as Int)[x := 5] = 5 as Int" $
+      substitution "x" (TNum 5) (AsExpr (Var "x") TInt)
+        `shouldBe` AsExpr (TNum 5) TInt
+
+    it "ascription no corpo de uma abstração: (\\x:Int. x as Int) 5  ->*  5" $ do
+      let e = App (Abs ("x", TInt) (AsExpr (Var "x") TInt)) (TNum 5)
+      tc e [] `shouldBe` Just TInt
+      eval e `shouldBe` TNum 5
+
+    it "desugar entra na ascription: (unit; 1) as Int  :  Int  e  ->*  1" $ do
+      let e = desugar (AsExpr (Seq Unit (TNum 1)) TInt)
+      e `shouldBe` AsExpr (App (Abs ("x", TUnit) (TNum 1)) Unit) TInt
+      tc e [] `shouldBe` Just TInt
+      eval e `shouldBe` TNum 1
