@@ -10,12 +10,17 @@ data Type = TBool
           | TUnit
           | TInt
           | TArrow Type Type
+          | TProduct Type Type
   deriving (Show, Eq)
 
 data Expr = TTrue
           | TFalse
           | Unit
           | TNum Integer
+          -- pairs and related operations (e.g., Fst and Snd)
+          | Pair Expr Expr
+          | Fst Expr
+          | Snd Expr
           | TIfThenElse Expr Expr Expr
           | Add Expr Expr
           | Sub Expr Expr
@@ -37,6 +42,21 @@ tc TTrue _                   = Just TBool
 tc TFalse _                  = Just TBool
 tc Unit _                    = Just TUnit
 tc (TNum _) _                = Just TInt
+
+tc (Pair e1 e2) c =
+  tc e1 c >>= \tyE1 ->
+  tc e2 c >>= \tyE2 -> Just $ TProduct tyE1 tyE2
+tc (Fst e) c =
+  tc e c >>= \tyE ->
+  case tyE of
+    TProduct t1 _ -> Just t1
+    _             -> Nothing
+tc (Snd e) c =
+  tc e c >>= \tyE ->
+  case tyE of
+    TProduct _ t2 -> Just t2
+    _             -> Nothing
+
 tc (TIfThenElse e1 e2 e3) c  =
   tc e1 c >>= \tyE1 ->
   tc e2 c >>= \tyE2 ->
@@ -87,6 +107,9 @@ desugar (Abs p e)     = Abs p (desugar e)
 desugar (App e1 e2)   = App (desugar e1) (desugar e2)
 desugar (AsExpr e t)  = AsExpr (desugar e) t
 desugar (Let x e1 e2) = Let x (desugar e1) (desugar e2)
+desugar (Pair e1 e2)  = Pair (desugar e1) (desugar e2)
+desugar (Fst e)       = Fst (desugar e)
+desugar (Snd e)       = Snd (desugar e)
 desugar e = e   -- TTrue, TFalse, Unit, TNum, Var
 
 eval :: Expr -> Expr
@@ -111,14 +134,23 @@ step (Equal e1 e2)                          = stepBinOp Equal e1 e2
 step (Less e1 e2)                           = stepBinOp Less e1 e2
 
 step (App (Abs (x, _) body) e2) | isValue e2 = Just $ substitution x e2 body
-step (App e1 e2) | isValue e1               = step e2 >>= \e2' -> Just $ App e1 e2'
-                 | otherwise                = step e1 >>= \e1' -> Just $ App e1' e2
+step (App e1 e2) | isValue e1                = step e2 >>= \e2' -> Just $ App e1 e2'
+                 | otherwise                 = step e1 >>= \e1' -> Just $ App e1' e2
 
 step (AsExpr e t) | isValue e                = Just e
                   | otherwise                = step e >>= \e' -> Just $ AsExpr e' t
 
-step (Let x e1 e2) | isValue e1               = Just $ substitution x e1 e2
-                  | otherwise                = step e1 >>= \e1' -> Just $ Let x e1' e2
+step (Let x e1 e2) | isValue e1              = Just $ substitution x e1 e2
+                   | otherwise               = step e1 >>= \e1' -> Just $ Let x e1' e2
+
+-- um par de valores eh um valor: step e2 devolve Nothing nesse caso
+step (Pair e1 e2) | isValue e1               = step e2 >>= \e2' -> Just $ Pair e1 e2'
+                  | otherwise                = step e1 >>= \e1' -> Just $ Pair e1' e2
+
+step (Fst p@(Pair v1 _)) | isValue p         = Just v1
+step (Snd p@(Pair _ v2)) | isValue p         = Just v2
+step (Fst e)                                 = step e >>= \e' -> Just $ Fst e'
+step (Snd e)                                 = step e >>= \e' -> Just $ Snd e'
 
 step _                                      = Nothing   -- valores e Var nao reduzem
 
@@ -139,6 +171,7 @@ isValue TFalse    = True
 isValue Unit      = True
 isValue (TNum _)  = True
 isValue (Abs _ _) = True
+isValue (Pair v1 v2) = isValue v1 && isValue v2
 isValue _         = False
 
 fv :: Expr -> Set Name
@@ -153,6 +186,9 @@ fv (Less e1 e2)            = fv e1 `Set.union` fv e2
 fv (TIfThenElse e1 e2 e3)  = Set.unions [fv e1, fv e2, fv e3]
 fv (AsExpr e _)            = fv e
 fv (Let x e1 e2)           = fv e1 `Set.union` (fv e2 `Set.difference` Set.singleton x)
+fv (Pair e1 e2)            = fv e1 `Set.union` fv e2
+fv (Fst e)                 = fv e
+fv (Snd e)                 = fv e
 fv _                       = Set.empty
 
 
@@ -173,6 +209,9 @@ substitution x e (Less e1 e2) = Less (substitution x e e1) (substitution x e e2)
 substitution x e (TIfThenElse e1 e2 e3) =
   TIfThenElse (substitution x e e1) (substitution x e e2) (substitution x e e3)
 substitution x e (AsExpr t ty) = AsExpr (substitution x e t) ty
+substitution x e (Pair e1 e2) = Pair (substitution x e e1) (substitution x e e2)
+substitution x e (Fst t)      = Fst (substitution x e t)
+substitution x e (Snd t)      = Snd (substitution x e t)
 -- x so esta ligada em e2; e1 sempre recebe a substituicao
 substitution x e (Let y e1 e2)
                               | x == y = Let y e1' e2

@@ -474,3 +474,96 @@ spec = do
       e `shouldBe` Let "u" Unit (App (Abs ("x", TUnit) (TNum 1)) (Var "u"))
       tc e [] `shouldBe` Just TInt
       eval e `shouldBe` TNum 1
+
+  ---------------------------------------------------------------------------
+  -- Pares (TAPL 11.6):  {e1, e2}, fst e, snd e
+  --   T-Pair:      Γ ⊢ e1 : T1   Γ ⊢ e2 : T2  ==>  Γ ⊢ {e1, e2} : T1 × T2
+  --   T-Proj1/2:   Γ ⊢ e : T1 × T2  ==>  Γ ⊢ fst e : T1  e  Γ ⊢ snd e : T2
+  --   E-PairBeta1: fst {v1, v2}  ->  v1
+  --   E-PairBeta2: snd {v1, v2}  ->  v2
+  --   E-Proj1/2:   e -> e'  ==>  fst e -> fst e'  e  snd e -> snd e'
+  --   E-Pair1:     e1 -> e1'  ==>  {e1, e2} -> {e1', e2}
+  --   E-Pair2:     e2 -> e2'  ==>  {v1, e2} -> {v1, e2'}
+  ---------------------------------------------------------------------------
+  describe "Pair" $ do
+    it "T-Pair: {1, true}  :  Int × Bool" $
+      tc (Pair (TNum 1) TTrue) [] `shouldBe` Just (TProduct TInt TBool)
+
+    it "T-Pair: os componentes podem ser funções: {inc, true}  :  (Int -> Int) × Bool" $
+      tc (Pair inc TTrue) [] `shouldBe` Just (TProduct (TArrow TInt TInt) TBool)
+
+    it "rejeita par com componente mal tipado: {1 + true, 2}" $
+      tc (Pair (Add (TNum 1) TTrue) (TNum 2)) [] `shouldBe` Nothing
+
+    it "T-Proj1: fst {1, true}  :  Int" $
+      tc (Fst (Pair (TNum 1) TTrue)) [] `shouldBe` Just TInt
+
+    it "T-Proj2: snd {1, true}  :  Bool" $
+      tc (Snd (Pair (TNum 1) TTrue)) [] `shouldBe` Just TBool
+
+    it "rejeita projeção de algo que não é par: fst 1" $ do
+      tc (Fst (TNum 1)) [] `shouldBe` Nothing
+      tc (Snd (TNum 1)) [] `shouldBe` Nothing
+
+    it "T-Abs com par: \\p:Int×Int. fst p + snd p  :  Int × Int -> Int" $
+      tc (Abs ("p", TProduct TInt TInt) (Add (Fst (Var "p")) (Snd (Var "p")))) []
+        `shouldBe` Just (TArrow (TProduct TInt TInt) TInt)
+
+    it "um par de valores é um valor; um par com termo não-valor não é" $ do
+      isValue (Pair (TNum 1) TTrue) `shouldBe` True
+      isValue (Pair (TNum 1) (Add (TNum 1) (TNum 1))) `shouldBe` False
+      step (Pair (TNum 1) TTrue) `shouldBe` Nothing
+
+    it "E-Pair1: {1 + 1, 2 + 2}  ->  {2, 2 + 2}" $
+      step (Pair (Add (TNum 1) (TNum 1)) (Add (TNum 2) (TNum 2)))
+        `shouldBe` Just (Pair (TNum 2) (Add (TNum 2) (TNum 2)))
+
+    it "E-Pair2: {2, 2 + 2}  ->  {2, 4}" $
+      step (Pair (TNum 2) (Add (TNum 2) (TNum 2)))
+        `shouldBe` Just (Pair (TNum 2) (TNum 4))
+
+    it "E-PairBeta1/2: fst {1, true} -> 1  e  snd {1, true} -> true" $ do
+      step (Fst (Pair (TNum 1) TTrue)) `shouldBe` Just (TNum 1)
+      step (Snd (Pair (TNum 1) TTrue)) `shouldBe` Just TTrue
+
+    it "E-Proj: avalia o par antes de projetar: snd {1 + 1, 3}  ->  snd {2, 3}" $
+      step (Snd (Pair (Add (TNum 1) (TNum 1)) (TNum 3)))
+        `shouldBe` Just (Snd (Pair (TNum 2) (TNum 3)))
+
+    it "E-Proj: o argumento pode não ser um par literal: fst ((\\x:Int. {x, x}) 1)" $
+      step (Fst (App (Abs ("x", TInt) (Pair (Var "x") (Var "x"))) (TNum 1)))
+        `shouldBe` Just (Fst (Pair (TNum 1) (TNum 1)))
+
+    it "snd {1 + 1, 2 * 3}  ->*  6" $
+      eval (Snd (Pair (Add (TNum 1) (TNum 1)) (Mul (TNum 2) (TNum 3)))) `shouldBe` TNum 6
+
+    it "pares como argumento: (\\p:Int×Int. fst p + snd p) {1, 2}  ->*  3" $ do
+      let e = App (Abs ("p", TProduct TInt TInt) (Add (Fst (Var "p")) (Snd (Var "p"))))
+                  (Pair (TNum 1) (TNum 2))
+      tc e [] `shouldBe` Just TInt
+      eval e `shouldBe` TNum 3
+
+    it "pares aninhados: fst (snd {1, {2, 3}})  ->*  2" $
+      eval (Fst (Snd (Pair (TNum 1) (Pair (TNum 2) (TNum 3))))) `shouldBe` TNum 2
+
+    it "let com par: let p = {1, true} in if snd p then fst p else 0  ->*  1" $ do
+      let e = Let "p" (Pair (TNum 1) TTrue)
+                (TIfThenElse (Snd (Var "p")) (Fst (Var "p")) (TNum 0))
+      tc e [] `shouldBe` Just TInt
+      eval e `shouldBe` TNum 1
+
+    it "fv({x, fst y}) = {x, y}" $
+      fv (Pair (Var "x") (Fst (Var "y"))) `shouldBe` Set.fromList ["x", "y"]
+
+    it "fv(\\x:Int. {x, snd z}) = {z}" $
+      fv (Abs ("x", TInt) (Pair (Var "x") (Snd (Var "z")))) `shouldBe` Set.fromList ["z"]
+
+    it "{x, fst x}[x := {1, 2}] = {{1, 2}, fst {1, 2}}" $
+      substitution "x" (Pair (TNum 1) (TNum 2)) (Pair (Var "x") (Fst (Var "x")))
+        `shouldBe` Pair (Pair (TNum 1) (TNum 2)) (Fst (Pair (TNum 1) (TNum 2)))
+
+    it "desugar entra no par: fst {(unit; 1), 2}  :  Int  e  ->*  1" $ do
+      let e = desugar (Fst (Pair (Seq Unit (TNum 1)) (TNum 2)))
+      e `shouldBe` Fst (Pair (App (Abs ("x", TUnit) (TNum 1)) Unit) (TNum 2))
+      tc e [] `shouldBe` Just TInt
+      eval e `shouldBe` TNum 1
