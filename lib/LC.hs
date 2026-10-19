@@ -1,9 +1,11 @@
 module LC where
+import Data.List (nub)
 import Data.Set (Set)
 import qualified Data.Set as Set
 
 
 type Name = String
+type Label = String
 type Context = [(Name, Type)]
 
 data Type = TBool
@@ -12,6 +14,7 @@ data Type = TBool
           | TArrow Type Type
           | TProduct Type Type
           | TTuple [Type]
+          | TRecord [(Label, Type)]
   deriving (Show, Eq)
 
 data Expr = TTrue
@@ -25,6 +28,9 @@ data Expr = TTrue
           -- tuplas {e1, ..., en} e projecao e.i (i comeca em 1)
           | Tuple [Expr]
           | Proj Expr Int
+          -- records {l1 = e1, ..., ln = en} e projecao e.l
+          | Record [(Label, Expr)]
+          | RProj Expr Label
           | TIfThenElse Expr Expr Expr
           | Add Expr Expr
           | Sub Expr Expr
@@ -67,6 +73,19 @@ tc (Proj e i) c =
   case tyE of
     TTuple tys | 1 <= i && i <= length tys -> Just $ tys !! (i - 1)
     _                                      -> Nothing
+
+-- os rotulos de um record precisam ser distintos
+tc (Record fs) c
+  | distinct (map fst fs) = mapM (\(l, e) -> tc e c >>= \ty -> Just (l, ty)) fs
+                              >>= \fts -> Just $ TRecord fts
+  | otherwise             = Nothing
+  where
+    distinct ls = length (nub ls) == length ls
+tc (RProj e l) c =
+  tc e c >>= \tyE ->
+  case tyE of
+    TRecord fts -> lookup l fts
+    _           -> Nothing
 
 tc (TIfThenElse e1 e2 e3) c  =
   tc e1 c >>= \tyE1 ->
@@ -123,6 +142,8 @@ desugar (Fst e)       = Fst (desugar e)
 desugar (Snd e)       = Snd (desugar e)
 desugar (Tuple es)    = Tuple (map desugar es)
 desugar (Proj e i)    = Proj (desugar e) i
+desugar (Record fs)   = Record [(l, desugar e) | (l, e) <- fs]
+desugar (RProj e l)   = RProj (desugar e) l
 desugar e = e   -- TTrue, TFalse, Unit, TNum, Var
 
 eval :: Expr -> Expr
@@ -172,6 +193,13 @@ step (Tuple es) = case break (not . isValue) es of
 step (Proj t@(Tuple vs) i) | isValue t && 1 <= i && i <= length vs = Just $ vs !! (i - 1)
 step (Proj e i)                              = step e >>= \e' -> Just $ Proj e' i
 
+-- avalia o primeiro campo que ainda nao eh valor (esquerda para direita)
+step (Record fs) = case break (not . isValue . snd) fs of
+  (vs, (l, e):rest) -> step e >>= \e' -> Just $ Record (vs ++ (l, e') : rest)
+  (_, [])           -> Nothing   -- record de valores eh um valor
+step (RProj r@(Record fs) l) | isValue r     = lookup l fs
+step (RProj e l)                             = step e >>= \e' -> Just $ RProj e' l
+
 step _                                      = Nothing   -- valores e Var nao reduzem
 
 -- regras de congruencia de um operador binario: avalia o operando da
@@ -193,6 +221,7 @@ isValue (TNum _)  = True
 isValue (Abs _ _) = True
 isValue (Pair v1 v2) = isValue v1 && isValue v2
 isValue (Tuple vs)   = all isValue vs
+isValue (Record fs)  = all (isValue . snd) fs
 isValue _         = False
 
 fv :: Expr -> Set Name
@@ -212,6 +241,8 @@ fv (Fst e)                 = fv e
 fv (Snd e)                 = fv e
 fv (Tuple es)              = Set.unions (map fv es)
 fv (Proj e _)              = fv e
+fv (Record fs)             = Set.unions (map (fv . snd) fs)
+fv (RProj e _)             = fv e
 fv _                       = Set.empty
 
 
@@ -237,6 +268,8 @@ substitution x e (Fst t)      = Fst (substitution x e t)
 substitution x e (Snd t)      = Snd (substitution x e t)
 substitution x e (Tuple ts)   = Tuple (map (substitution x e) ts)
 substitution x e (Proj t i)   = Proj (substitution x e t) i
+substitution x e (Record fs)  = Record [(l, substitution x e t) | (l, t) <- fs]
+substitution x e (RProj t l)  = RProj (substitution x e t) l
 -- x so esta ligada em e2; e1 sempre recebe a substituicao
 substitution x e (Let y e1 e2)
                               | x == y = Let y e1' e2

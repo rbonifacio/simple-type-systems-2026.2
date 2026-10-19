@@ -636,3 +636,81 @@ spec = do
       let e = desugar (Proj (Tuple [Seq Unit (TNum 1), TNum 2]) 1)
       e `shouldBe` Proj (Tuple [App (Abs ("x", TUnit) (TNum 1)) Unit, TNum 2]) 1
       eval e `shouldBe` TNum 1
+
+  ---------------------------------------------------------------------------
+  -- Records (TAPL 11.8):  {l1 = e1, ..., ln = en}, e.l
+  --   T-Rcd:       para cada i, Γ ⊢ ei : Ti  ==>  Γ ⊢ {li = ei} : {li : Ti}
+  --                (os rótulos li precisam ser distintos)
+  --   T-Proj:      Γ ⊢ e : {li : Ti}  ==>  Γ ⊢ e.lj : Tj
+  --   E-ProjRcd:   {li = vi}.lj  ->  vj
+  --   E-Proj:      e -> e'  ==>  e.l -> e'.l
+  --   E-Rcd:       ej -> ej'  ==>  {.., lj = ej, ..} -> {.., lj = ej', ..}
+  ---------------------------------------------------------------------------
+  describe "Record" $ do
+    it "T-Rcd: {x = 1, b = true}  :  {x : Int, b : Bool}" $
+      tc (Record [("x", TNum 1), ("b", TTrue)]) []
+        `shouldBe` Just (TRecord [("x", TInt), ("b", TBool)])
+
+    it "T-Rcd: o record vazio {}  :  {}" $
+      tc (Record []) [] `shouldBe` Just (TRecord [])
+
+    it "rejeita record com rótulos repetidos: {x = 1, x = 2}" $
+      tc (Record [("x", TNum 1), ("x", TNum 2)]) [] `shouldBe` Nothing
+
+    it "rejeita record com campo mal tipado: {x = 1 + true}" $
+      tc (Record [("x", Add (TNum 1) TTrue)]) [] `shouldBe` Nothing
+
+    it "T-Proj: {x = 1, b = true}.b  :  Bool" $
+      tc (RProj (Record [("x", TNum 1), ("b", TTrue)]) "b") [] `shouldBe` Just TBool
+
+    it "rejeita projeção de rótulo inexistente: {x = 1}.y" $
+      tc (RProj (Record [("x", TNum 1)]) "y") [] `shouldBe` Nothing
+
+    it "rejeita projeção de algo que não é record: 1.x" $
+      tc (RProj (TNum 1) "x") [] `shouldBe` Nothing
+
+    it "a ordem dos campos importa no tipo (sem subtipagem)" $
+      TRecord [("x", TInt), ("y", TInt)] `shouldNotBe` TRecord [("y", TInt), ("x", TInt)]
+
+    it "um record de valores é um valor; com um termo não-valor, não é" $ do
+      isValue (Record [("x", TNum 1), ("b", TTrue)]) `shouldBe` True
+      isValue (Record []) `shouldBe` True
+      isValue (Record [("x", Add (TNum 1) (TNum 1))]) `shouldBe` False
+      step (Record [("x", TNum 1)]) `shouldBe` Nothing
+
+    it "E-Rcd: avalia da esquerda para a direita: {x = 1, y = 1 + 1, z = 2 + 2}  ->  {x = 1, y = 2, z = 2 + 2}" $
+      step (Record [("x", TNum 1), ("y", Add (TNum 1) (TNum 1)), ("z", Add (TNum 2) (TNum 2))])
+        `shouldBe` Just (Record [("x", TNum 1), ("y", TNum 2), ("z", Add (TNum 2) (TNum 2))])
+
+    it "E-ProjRcd: {x = 1, b = true}.b  ->  true" $
+      step (RProj (Record [("x", TNum 1), ("b", TTrue)]) "b") `shouldBe` Just TTrue
+
+    it "E-Proj: avalia o record antes de projetar: {x = 1 + 1}.x  ->  {x = 2}.x" $
+      step (RProj (Record [("x", Add (TNum 1) (TNum 1))]) "x")
+        `shouldBe` Just (RProj (Record [("x", TNum 2)]) "x")
+
+    it "{x = 1 + 1, y = 2 * 3}.y  ->*  6" $
+      eval (RProj (Record [("x", Add (TNum 1) (TNum 1)), ("y", Mul (TNum 2) (TNum 3))]) "y")
+        `shouldBe` TNum 6
+
+    it "record como argumento: (\\p:{x:Int, y:Int}. p.x + p.y) {x = 1, y = 2}  ->*  3" $ do
+      let e = App (Abs ("p", TRecord [("x", TInt), ("y", TInt)])
+                       (Add (RProj (Var "p") "x") (RProj (Var "p") "y")))
+                  (Record [("x", TNum 1), ("y", TNum 2)])
+      tc e [] `shouldBe` Just TInt
+      eval e `shouldBe` TNum 3
+
+    it "records aninhados: {p = {x = 5}}.p.x  ->*  5" $
+      eval (RProj (RProj (Record [("p", Record [("x", TNum 5)])]) "p") "x") `shouldBe` TNum 5
+
+    it "rótulos não são variáveis: fv({x = y}) = {y}" $
+      fv (Record [("x", Var "y")]) `shouldBe` Set.fromList ["y"]
+
+    it "{a = x, b = x.l}[x := {l = 5}] = {a = {l = 5}, b = {l = 5}.l}" $
+      substitution "x" (Record [("l", TNum 5)]) (Record [("a", Var "x"), ("b", RProj (Var "x") "l")])
+        `shouldBe` Record [("a", Record [("l", TNum 5)]), ("b", RProj (Record [("l", TNum 5)]) "l")]
+
+    it "desugar entra no record: {a = (unit; 1)}.a  ->*  1" $ do
+      let e = desugar (RProj (Record [("a", Seq Unit (TNum 1))]) "a")
+      e `shouldBe` RProj (Record [("a", App (Abs ("x", TUnit) (TNum 1)) Unit)]) "a"
+      eval e `shouldBe` TNum 1
