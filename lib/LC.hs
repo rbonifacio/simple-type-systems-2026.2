@@ -11,6 +11,7 @@ data Type = TBool
           | TInt
           | TArrow Type Type
           | TProduct Type Type
+          | TTuple [Type]
   deriving (Show, Eq)
 
 data Expr = TTrue
@@ -21,6 +22,9 @@ data Expr = TTrue
           | Pair Expr Expr
           | Fst Expr
           | Snd Expr
+          -- tuplas {e1, ..., en} e projecao e.i (i comeca em 1)
+          | Tuple [Expr]
+          | Proj Expr Int
           | TIfThenElse Expr Expr Expr
           | Add Expr Expr
           | Sub Expr Expr
@@ -56,6 +60,13 @@ tc (Snd e) c =
   case tyE of
     TProduct _ t2 -> Just t2
     _             -> Nothing
+
+tc (Tuple es) c = mapM (\e -> tc e c) es >>= \tys -> Just $ TTuple tys
+tc (Proj e i) c =
+  tc e c >>= \tyE ->
+  case tyE of
+    TTuple tys | 1 <= i && i <= length tys -> Just $ tys !! (i - 1)
+    _                                      -> Nothing
 
 tc (TIfThenElse e1 e2 e3) c  =
   tc e1 c >>= \tyE1 ->
@@ -110,6 +121,8 @@ desugar (Let x e1 e2) = Let x (desugar e1) (desugar e2)
 desugar (Pair e1 e2)  = Pair (desugar e1) (desugar e2)
 desugar (Fst e)       = Fst (desugar e)
 desugar (Snd e)       = Snd (desugar e)
+desugar (Tuple es)    = Tuple (map desugar es)
+desugar (Proj e i)    = Proj (desugar e) i
 desugar e = e   -- TTrue, TFalse, Unit, TNum, Var
 
 eval :: Expr -> Expr
@@ -152,6 +165,13 @@ step (Snd p@(Pair _ v2)) | isValue p         = Just v2
 step (Fst e)                                 = step e >>= \e' -> Just $ Fst e'
 step (Snd e)                                 = step e >>= \e' -> Just $ Snd e'
 
+-- avalia o primeiro componente que ainda nao eh valor (esquerda para direita)
+step (Tuple es) = case break (not . isValue) es of
+  (vs, e:rest) -> step e >>= \e' -> Just $ Tuple (vs ++ e' : rest)
+  (_, [])      -> Nothing   -- tupla de valores eh um valor
+step (Proj t@(Tuple vs) i) | isValue t && 1 <= i && i <= length vs = Just $ vs !! (i - 1)
+step (Proj e i)                              = step e >>= \e' -> Just $ Proj e' i
+
 step _                                      = Nothing   -- valores e Var nao reduzem
 
 -- regras de congruencia de um operador binario: avalia o operando da
@@ -172,6 +192,7 @@ isValue Unit      = True
 isValue (TNum _)  = True
 isValue (Abs _ _) = True
 isValue (Pair v1 v2) = isValue v1 && isValue v2
+isValue (Tuple vs)   = all isValue vs
 isValue _         = False
 
 fv :: Expr -> Set Name
@@ -189,6 +210,8 @@ fv (Let x e1 e2)           = fv e1 `Set.union` (fv e2 `Set.difference` Set.singl
 fv (Pair e1 e2)            = fv e1 `Set.union` fv e2
 fv (Fst e)                 = fv e
 fv (Snd e)                 = fv e
+fv (Tuple es)              = Set.unions (map fv es)
+fv (Proj e _)              = fv e
 fv _                       = Set.empty
 
 
@@ -212,6 +235,8 @@ substitution x e (AsExpr t ty) = AsExpr (substitution x e t) ty
 substitution x e (Pair e1 e2) = Pair (substitution x e e1) (substitution x e e2)
 substitution x e (Fst t)      = Fst (substitution x e t)
 substitution x e (Snd t)      = Snd (substitution x e t)
+substitution x e (Tuple ts)   = Tuple (map (substitution x e) ts)
+substitution x e (Proj t i)   = Proj (substitution x e t) i
 -- x so esta ligada em e2; e1 sempre recebe a substituicao
 substitution x e (Let y e1 e2)
                               | x == y = Let y e1' e2

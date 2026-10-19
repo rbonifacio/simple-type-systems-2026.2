@@ -567,3 +567,72 @@ spec = do
       e `shouldBe` Fst (Pair (App (Abs ("x", TUnit) (TNum 1)) Unit) (TNum 2))
       tc e [] `shouldBe` Just TInt
       eval e `shouldBe` TNum 1
+
+  ---------------------------------------------------------------------------
+  -- Tuplas (TAPL 11.7):  {e1, ..., en}, e.i
+  --   T-Tuple:     para cada i, Γ ⊢ ei : Ti  ==>  Γ ⊢ {e1, ..., en} : {T1, ..., Tn}
+  --   T-Proj:      Γ ⊢ e : {T1, ..., Tn}  ==>  Γ ⊢ e.j : Tj   (1 <= j <= n)
+  --   E-ProjTuple: {v1, ..., vn}.j  ->  vj
+  --   E-Proj:      e -> e'  ==>  e.i -> e'.i
+  --   E-Tuple:     ej -> ej'  ==>  {v1, ..., vj-1, ej, ...} -> {v1, ..., vj-1, ej', ...}
+  ---------------------------------------------------------------------------
+  describe "Tuple" $ do
+    it "T-Tuple: {1, true, unit}  :  {Int, Bool, Unit}" $
+      tc (Tuple [TNum 1, TTrue, Unit]) [] `shouldBe` Just (TTuple [TInt, TBool, TUnit])
+
+    it "T-Tuple: a tupla vazia {}  :  {}" $
+      tc (Tuple []) [] `shouldBe` Just (TTuple [])
+
+    it "rejeita tupla com componente mal tipado: {1, 1 + true}" $
+      tc (Tuple [TNum 1, Add (TNum 1) TTrue]) [] `shouldBe` Nothing
+
+    it "T-Proj: {1, true, unit}.2  :  Bool" $
+      tc (Proj (Tuple [TNum 1, TTrue, Unit]) 2) [] `shouldBe` Just TBool
+
+    it "rejeita projeção fora dos limites: {1, true}.0 e {1, true}.3" $ do
+      tc (Proj (Tuple [TNum 1, TTrue]) 0) [] `shouldBe` Nothing
+      tc (Proj (Tuple [TNum 1, TTrue]) 3) [] `shouldBe` Nothing
+
+    it "rejeita projeção de algo que não é tupla: 1.1" $
+      tc (Proj (TNum 1) 1) [] `shouldBe` Nothing
+
+    it "uma tupla de valores é um valor; com um termo não-valor, não é" $ do
+      isValue (Tuple [TNum 1, TTrue]) `shouldBe` True
+      isValue (Tuple []) `shouldBe` True
+      isValue (Tuple [TNum 1, Add (TNum 1) (TNum 1)]) `shouldBe` False
+      step (Tuple [TNum 1, TTrue]) `shouldBe` Nothing
+
+    it "E-Tuple: avalia da esquerda para a direita: {1, 1 + 1, 2 + 2}  ->  {1, 2, 2 + 2}" $
+      step (Tuple [TNum 1, Add (TNum 1) (TNum 1), Add (TNum 2) (TNum 2)])
+        `shouldBe` Just (Tuple [TNum 1, TNum 2, Add (TNum 2) (TNum 2)])
+
+    it "E-ProjTuple: {1, true, unit}.3  ->  unit" $
+      step (Proj (Tuple [TNum 1, TTrue, Unit]) 3) `shouldBe` Just Unit
+
+    it "E-Proj: avalia a tupla antes de projetar: {1 + 1, 3}.2  ->  {2, 3}.2" $
+      step (Proj (Tuple [Add (TNum 1) (TNum 1), TNum 3]) 2)
+        `shouldBe` Just (Proj (Tuple [TNum 2, TNum 3]) 2)
+
+    it "{1 + 1, 2 * 3, true}.2  ->*  6" $
+      eval (Proj (Tuple [Add (TNum 1) (TNum 1), Mul (TNum 2) (TNum 3), TTrue]) 2) `shouldBe` TNum 6
+
+    it "tupla como argumento: (\\t:{Int,Int,Int}. t.1 + t.3) {1, 2, 3}  ->*  4" $ do
+      let e = App (Abs ("t", TTuple [TInt, TInt, TInt]) (Add (Proj (Var "t") 1) (Proj (Var "t") 3)))
+                  (Tuple [TNum 1, TNum 2, TNum 3])
+      tc e [] `shouldBe` Just TInt
+      eval e `shouldBe` TNum 4
+
+    it "tuplas aninhadas: {1, {2, 3}}.2.1  ->*  2" $
+      eval (Proj (Proj (Tuple [TNum 1, Tuple [TNum 2, TNum 3]]) 2) 1) `shouldBe` TNum 2
+
+    it "fv({x, y.1, \\x:Int. x}) = {x, y}" $
+      fv (Tuple [Var "x", Proj (Var "y") 1, Abs ("x", TInt) (Var "x")]) `shouldBe` Set.fromList ["x", "y"]
+
+    it "{x, x.1}[x := {5}] = {{5}, {5}.1}" $
+      substitution "x" (Tuple [TNum 5]) (Tuple [Var "x", Proj (Var "x") 1])
+        `shouldBe` Tuple [Tuple [TNum 5], Proj (Tuple [TNum 5]) 1]
+
+    it "desugar entra na tupla: {(unit; 1), 2}.1  ->*  1" $ do
+      let e = desugar (Proj (Tuple [Seq Unit (TNum 1), TNum 2]) 1)
+      e `shouldBe` Proj (Tuple [App (Abs ("x", TUnit) (TNum 1)) Unit, TNum 2]) 1
+      eval e `shouldBe` TNum 1
